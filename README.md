@@ -139,7 +139,7 @@ These feed directly into the entity search engine, enabling instant lookups like
 
 ## Benchmarks
 
-Tested on the [IRONMAN benchmark suite](https://github.com/ironman-bench) against comparable memory systems:
+Tested on the [IRONMAN benchmark suite](https://github.com/yPhi-box/ironman-benchmark) against comparable memory systems:
 
 ### Day Tier (50 messages, 82 queries)
 | System | Accuracy | Latency | API Cost |
