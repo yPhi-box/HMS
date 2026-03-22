@@ -64,6 +64,52 @@ class EntityExtractor:
             re.compile(r'(?:SR-?22|FR-?44|non-?owner|broad\s*form)\s+(?:insurance|policy|filing|coverage)', re.I),
         ]
         
+        # v2.3: Person name patterns for conversation data
+        self.person_name_patterns = [
+            # "New hire announcement: First Last is joining..."
+            re.compile(r'(?:New hire|new hire|Welcome|welcome)[^.]*?([A-Z][a-z]+\s+[A-Z][a-z]+)', re.I),
+            # "Employee ID" / "NX-1234" near a name
+            re.compile(r'([A-Z][a-z]+\s+[A-Z][a-z]+)\s*\(?(NX-\d+)\)?'),
+            # "Team transfer: First Last is moving..."
+            re.compile(r'(?:Team transfer|transfer|Transfer)[:\s]+([A-Z][a-z]+\s+[A-Z][a-z]+)', re.I),
+            # "Directory entry: First Last"
+            re.compile(r'(?:Directory entry|directory)[:\s]+([A-Z][a-z]+\s+[A-Z][a-z]+)', re.I),
+            # "First Last — Role on Team"
+            re.compile(r'([A-Z][a-z]+\s+[A-Z][a-z]+)\s+[-—]\s+[A-Z][a-z]'),
+            # "update from First Last:"
+            re.compile(r'(?:from|by)\s+([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\s*:|,)', re.I),
+            # "allergic to X" / "allergy" near a name
+            re.compile(r'([A-Z][a-z]+\s+[A-Z][a-z]+)\s+(?:is\s+)?(?:allergic|has\s+an?\s+allergy)', re.I),
+            # "First Last's pet/hobby/birthday"
+            re.compile(r"([A-Z][a-z]+\s+[A-Z][a-z]+)(?:'s?\s+)(?:pet|hobby|hobbies|birthday|allergy|allergies|diet|favorite|seat|desk)", re.I),
+            # "First Last mentioned/said/brought/shared"
+            re.compile(r'([A-Z][a-z]+\s+[A-Z][a-z]+)\s+(?:mentioned|said|brought|shared|announced|reported|confirmed|noted)', re.I),
+        ]
+        
+        # v2.3: Employee ID pattern
+        self.employee_id_pattern = re.compile(r'(NX-\d{3,5})')
+        
+        # v2.3b: Personal fact patterns (allergy, hobby, pet, seat, diet)
+        self.personal_fact_patterns = [
+            # "X is allergic to Y"
+            (re.compile(r'([A-Z][a-z]+\s+[A-Z][a-z]+)\s+is\s+allergic\s+to\s+(\w+(?:\s+\w+)?)', re.I), 'allergy'),
+            # "X has a Y allergy"  
+            (re.compile(r'([A-Z][a-z]+\s+[A-Z][a-z]+)\s+has\s+(?:a|an)\s+(\w+)\s+allergy', re.I), 'allergy'),
+            # "X's pet/dog/cat is named Y" or "X's Y (breed)"
+            (re.compile(r"([A-Z][a-z]+\s+[A-Z][a-z]+)(?:'s?\s+)(?:pet|dog|cat|bird|fish|rabbit|hamster)\s+(?:is\s+)?(?:named\s+)?(\w+)", re.I), 'pet'),
+            # "X brought Y (their dog/cat)"
+            (re.compile(r'([A-Z][a-z]+\s+[A-Z][a-z]+)\s+brought\s+(\w+)\s+\((?:their|his|her)\s+(?:dog|cat|pet)', re.I), 'pet'),
+            # "X sits at Y" / "X's desk is Y"
+            (re.compile(r'([A-Z][a-z]+\s+[A-Z][a-z]+)\s+(?:sits?\s+(?:at|in)|desk\s+(?:is|at))\s+([A-Z0-9][\w-]+)', re.I), 'seat'),
+            # "X enjoys/likes Y" / "X's hobby is Y"
+            (re.compile(r"([A-Z][a-z]+\s+[A-Z][a-z]+)(?:'s?\s+hobb(?:y|ies)\s+(?:is|are|include)\s+)(\w+(?:\s+\w+)?)", re.I), 'hobby'),
+            (re.compile(r'([A-Z][a-z]+\s+[A-Z][a-z]+)\s+(?:enjoys?|likes?|into|loves?)\s+(\w+(?:\s+\w+)?)', re.I), 'hobby'),
+            # "X joined on DATE" / "X is joining... starting DATE"
+            (re.compile(r'([A-Z][a-z]+\s+[A-Z][a-z]+)\s+(?:is\s+)?joining\s+.*?(?:starting|on)\s+(\d{4}-\d{2}-\d{2})', re.I), 'join_date'),
+            # "X from CITY" / "X based in CITY"
+            (re.compile(r'([A-Z][a-z]+\s+[A-Z][a-z]+).*?(?:from|based in|lives in|located in)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)', re.I), 'hometown'),
+        ]
+        
         # Fiction character patterns (v2.2)
         self.fiction_patterns = [
             # "characters: X, Y" or "main characters: X and Y"
@@ -241,5 +287,52 @@ class EntityExtractor:
         
         # Note: For project-specific fiction character names, users can extend
         # this by adding known names to a config file or environment variable.
+        
+        # v2.3: Person name extraction for conversation data
+        for pattern in self.person_name_patterns:
+            for m in pattern.finditer(text):
+                name = m.group(1).strip()
+                if len(name) > 3 and len(name) < 50:
+                    add('person', 'person_name', name)
+                    # Check for employee ID in same match
+                    if m.lastindex and m.lastindex >= 2:
+                        try:
+                            emp_id = m.group(2)
+                            if emp_id:
+                                add('person', f'{name}_employee_id', emp_id)
+                        except IndexError:
+                            pass
+        
+        # v2.3: Extract employee IDs
+        for m in self.employee_id_pattern.finditer(text):
+            emp_id = m.group(1)
+            # Try to find who it belongs to by looking nearby
+            start = max(0, m.start() - 80)
+            context = text[start:m.start()]
+            name_match = re.search(r'([A-Z][a-z]+\s+[A-Z][a-z]+)', context)
+            if name_match:
+                add('person', f'{name_match.group(1)}_employee_id', emp_id)
+            else:
+                add('person', 'employee_id', emp_id)
+        
+        # v2.3b: Extract personal facts (allergy, pet, seat, hobby, join date, hometown)
+        for pattern, fact_type in self.personal_fact_patterns:
+            for m in pattern.finditer(text):
+                name = m.group(1).strip()
+                value = m.group(2).strip()
+                if len(name) > 3 and len(value) > 1:
+                    add('person', f'{name}_{fact_type}', value)
+        
+        # v2.3: Extract full names from "First Last" patterns in structured data
+        # Match "First Last" when followed by role/team indicators
+        for m in re.finditer(r'([A-Z][a-z]{1,15}\s+[A-Z][a-z]{1,20})\s+(?:is|was|will|has|from|on the|at|—|-)', text):
+            name = m.group(1).strip()
+            # Filter out false positives (common phrases that look like names)
+            false_positives = {'New Hire', 'Team Transfer', 'Directory Entry', 'Project Mercury',
+                             'Account Review', 'Sprint Planning', 'Security Credential',
+                             'Date Monday', 'Date Tuesday', 'Date Wednesday', 'Date Thursday',
+                             'Date Friday', 'Date Saturday', 'Date Sunday'}
+            if name not in false_positives and len(name) > 4:
+                add('person', 'person_name', name)
         
         return entities

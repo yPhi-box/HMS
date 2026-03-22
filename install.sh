@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# HMS v2.2 — Hybrid Memory Server
+# HMS v2.4 — Hybrid Memory Server
 # One-liner installer for OpenClaw
 #
 # Usage:
@@ -54,7 +54,7 @@ done
 
 echo ""
 echo -e "${BLUE}╔══════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║  HMS v2.2 — Hybrid Memory Server         ║${NC}"
+echo -e "${BLUE}║  HMS v2.4 — Hybrid Memory Server         ║${NC}"
 echo -e "${BLUE}║  Local embeddings · Zero API costs        ║${NC}"
 echo -e "${BLUE}╚══════════════════════════════════════════╝${NC}"
 echo ""
@@ -265,7 +265,7 @@ fi
 # ---- Done ----
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║  HMS v2.2 installed successfully!         ║${NC}"
+echo -e "${GREEN}║  HMS v2.4 installed successfully!         ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════╝${NC}"
 echo ""
 log "Server:  http://localhost:$PORT"

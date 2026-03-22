@@ -199,7 +199,7 @@ Actual savings depend on your usage. The principle: sending 500 tokens of the *r
 ### Quick Install
 
 ```bash
-git clone https://github.com/openclaw/hms.git
+git clone https://github.com/yPhi-box/HMS.git
 cd hms
 bash install.sh
 ```

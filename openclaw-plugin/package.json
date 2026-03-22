@@ -1,6 +1,6 @@
 {
   "name": "hms-memory",
-  "version": "2.2.0",
+  "version": "2.4.0",
   "description": "Hybrid Memory Server plugin for OpenClaw — zero-cost local semantic + keyword search",
   "license": "MIT",
   "keywords": [

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HMS v2.2 Performance Benchmark
+HMS v2.4 Performance Benchmark
 Tests indexing speed, search latency, accuracy, concurrency, scale, and edge cases.
 Uses rich synthetic data — zero personal information.
 """
@@ -1324,7 +1324,7 @@ def test_reindex_consistency(test_dir: str) -> dict:
 
 def main():
     print("=" * 60)
-    print("   HMS v2.2 — PERFORMANCE BENCHMARK")
+    print("   HMS v2.4 — PERFORMANCE BENCHMARK")
     print("   Synthetic data · Zero personal information")
     print("=" * 60)
 

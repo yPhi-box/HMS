@@ -1,9 +1,11 @@
 """
 Markdown-aware text chunker with overlapping windows.
 v2: Adds sentence overlap between chunks to prevent fact splitting at boundaries.
+v2.3: Prepends date context to chunks for temporal search.
 """
 from pathlib import Path
 from typing import List, Dict, Optional
+from datetime import datetime
 import re
 import hashlib
 
@@ -34,6 +36,8 @@ class Chunker:
         ]
         # Sentence boundary detection
         self._sentence_re = re.compile(r'(?<=[.!?])\s+(?=[A-Z])|(?<=\n)\s*(?=[-•*]|\d+\.)')
+        # Date extraction from filenames (YYYY-MM-DD)
+        self._date_re = re.compile(r'(\d{4}-\d{2}-\d{2})')
     
     def _split_sentences(self, text: str) -> List[str]:
         """Split text into sentences (rough but effective)."""
@@ -49,8 +53,27 @@ class Chunker:
                     result.append(stripped)
         return result if result else [text]
     
+    def _extract_file_date(self, file_path: str) -> Optional[str]:
+        """Extract date from filename (e.g., '2025-09-28.md' -> '2025-09-28').
+        Also formats it as human-readable for embedding context."""
+        m = self._date_re.search(str(file_path))
+        if m:
+            return m.group(1)
+        return None
+    
+    def _format_date_context(self, date_str: str) -> str:
+        """Convert '2025-09-28' to 'Date: September 28, 2025 (2025-09-28)' for chunk prefix."""
+        try:
+            dt = datetime.strptime(date_str, '%Y-%m-%d')
+            human = dt.strftime('%B %d, %Y')
+            weekday = dt.strftime('%A')
+            return f"Date: {weekday}, {human} ({date_str})"
+        except ValueError:
+            return f"Date: {date_str}"
+    
     def chunk_file(self, file_path: Path) -> List[Dict]:
-        """Chunk a file by markdown sections with overlap."""
+        """Chunk a file by markdown sections with overlap.
+        v2.3: Prepends date context to every chunk from dated files."""
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
         
@@ -67,14 +90,26 @@ class Chunker:
         sections = self._split_by_sections(lines)
         chunks = []
         
+        # v2.3: Extract date from filename for temporal context
+        file_date = self._extract_file_date(str(file_path))
+        date_context = self._format_date_context(file_date) if file_date else None
+        
         for section in sections:
             section_chunks = self._process_section(section, str(file_path))
             chunks.extend(section_chunks)
         
+        # v2.3: Prepend date context and store date metadata
+        for chunk in chunks:
+            if date_context:
+                chunk['text'] = f"{date_context}\n{chunk['text']}"
+                chunk['chars'] = len(chunk['text'])
+                chunk.setdefault('metadata', {})['file_date'] = file_date
+            
+            if is_transcript:
+                chunk.setdefault('metadata', {})['source'] = 'transcript'
+        
         if is_transcript:
             self.max_chunk_size = old_max
-            for chunk in chunks:
-                chunk.setdefault('metadata', {})['source'] = 'transcript'
         
         return chunks
     

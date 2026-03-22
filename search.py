@@ -1,17 +1,32 @@
 """
-Hybrid search v2.2: HNSW vectors + FTS5 keywords + entity lookup + temporal decay + 
+Hybrid search v2.4: HNSW vectors + FTS5 keywords + entity lookup + temporal decay + 
 query expansion + adjacency boost + type awareness + query intent routing +
-date-aware routing + tuned transcript suppression.
+date-aware routing + tuned transcript suppression + TEMPORAL SEARCH +
+CROSS-ENCODER RERANKING.
+
+v2.4 additions:
+- Cross-encoder reranking: after initial retrieval, re-score top candidates
+  using cross-encoder/ms-marco-MiniLM-L-6-v2 for much better precision
+- Blended scoring: 40% original hybrid score + 60% cross-encoder relevance
+- Wider initial retrieval (top-20) to give reranker more candidates
+- Reranker is optional: degrades gracefully if model not available
+
+v2.3 additions:
+- Temporal query detection ("when", "last time", "most recent", "first time")
+- Two-pass temporal search: semantic pass → rerank by date
+- Strong date filtering: explicit dates in queries → filter to matching files
+- Recency bias for "last/latest/most recent" queries
+- Date context in chunks (prepended by chunker) improves embedding matches
 
 Architecture:
 - Two-tier HNSW: primary (curated files) vs secondary (transcripts)
 - FTS5 keyword matching with BM25 scoring
 - Entity lookup with per-word fallback for proper nouns
-- Query intent detection (12 categories) for smart boosting
+- Query intent detection (13 categories) for smart boosting
+- Temporal search mode for time-related queries
 - Date-aware routing for temporal queries
+- Cross-encoder reranking (top-20 → best top-N)
 - Configurable synonym expansion
-
-Benchmark: 96.4% accuracy on 973 queries, 14ms avg latency.
 """
 from typing import List, Dict, Tuple, Optional
 from datetime import datetime
@@ -174,13 +189,51 @@ INTENT_PATTERNS = {
     },
 }
 
+# v2.3: Temporal query patterns
+TEMPORAL_RECENCY_PATTERNS = [
+    re.compile(r'\blast\s+time\b', re.I),
+    re.compile(r'\bmost\s+recent\b', re.I),
+    re.compile(r'\blatest\b', re.I),
+    re.compile(r'\blast\b.*\b(?:update|change|email|sent|created|published|deployed|fixed|broke|issue|rotated)\b', re.I),
+    re.compile(r'\brecently\b', re.I),
+    re.compile(r'\blast\s+(?:week|month|day)\b', re.I),
+    re.compile(r'\bcurrent(?:ly)?\b', re.I),
+    re.compile(r'\bnow\b', re.I),
+    re.compile(r'\btoday\b', re.I),
+    re.compile(r'\bpresent\b', re.I),
+]
+
+TEMPORAL_WHEN_PATTERNS = [
+    re.compile(r'\bwhen\s+(?:did|was|were|is|has)\b', re.I),
+    re.compile(r'\bwhat\s+date\b', re.I),
+    re.compile(r'\bwhat\s+day\b', re.I),
+    re.compile(r'\bhow\s+long\s+ago\b', re.I),
+    re.compile(r'\bfirst\s+time\b', re.I),
+]
+
+TEMPORAL_SPECIFIC_DATE_PATTERNS = [
+    re.compile(r'\bon\s+(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}', re.I),
+    re.compile(r'\bon\s+\d{4}-\d{2}-\d{2}\b', re.I),
+    re.compile(r'\bon\s+\d{1,2}/\d{1,2}', re.I),
+    re.compile(r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:st|nd|rd|th)?(?:[,\s]+\d{4})?\b', re.I),
+]
+
 
 class HybridSearch:
-    """Hybrid search with query intent detection, expansion, and adjacency."""
+    """Hybrid search with query intent detection, expansion, adjacency, and reranking."""
     
-    def __init__(self, db: MemoryDatabase, embedder: Embedder):
+    def __init__(self, db: MemoryDatabase, embedder: Embedder, enable_reranker: bool = True):
         self.db = db
         self.embedder = embedder
+        self.reranker = None
+        
+        if enable_reranker:
+            try:
+                from reranker import Reranker
+                self.reranker = Reranker.get_instance()
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"Reranker not available: {e}. Running without reranking.")
     
     # Date extraction patterns
     _date_patterns = [
@@ -235,6 +288,101 @@ class HybridSearch:
             if dp in file_path:
                 return 0.3
         return 0.0
+    
+    def _detect_temporal_mode(self, query: str) -> Optional[str]:
+        """Detect if query needs temporal search. Returns mode or None.
+        
+        Modes:
+        - 'recency': "last time", "most recent" → sort by newest
+        - 'when': "when did X happen" → find date of event
+        - 'specific_date': "on March 15th" → filter to that date
+        - None: not a temporal query
+        """
+        # Check specific date first (most restrictive)
+        for pattern in TEMPORAL_SPECIFIC_DATE_PATTERNS:
+            if pattern.search(query):
+                return 'specific_date'
+        
+        # Check for recency queries
+        for pattern in TEMPORAL_RECENCY_PATTERNS:
+            if pattern.search(query):
+                return 'recency'
+        
+        # Check for "when" queries
+        for pattern in TEMPORAL_WHEN_PATTERNS:
+            if pattern.search(query):
+                return 'when'
+        
+        return None
+    
+    def _get_chunks_by_date(self, date_str: str) -> List[Dict]:
+        """Get all chunks from files matching a specific date."""
+        cursor = self.db.conn.cursor()
+        rows = cursor.execute("""
+            SELECT id, file_path, line_start, line_end, text, indexed_at, metadata
+            FROM chunks WHERE file_path LIKE ?
+        """, (f'%{date_str}%',)).fetchall()
+        
+        results = []
+        for row in rows:
+            results.append({
+                'id': row[0], 'file_path': row[1], 'line_start': row[2],
+                'line_end': row[3], 'text': row[4], 'indexed_at': row[5],
+                'metadata': row[6], 'score': 0.5,
+            })
+        return results
+    
+    def _extract_file_date(self, file_path: str) -> Optional[str]:
+        """Extract YYYY-MM-DD from a file path."""
+        m = re.search(r'(\d{4}-\d{2}-\d{2})', file_path)
+        return m.group(1) if m else None
+    
+    def _temporal_rerank(self, results: List[Dict], mode: str) -> List[Dict]:
+        """Rerank results based on temporal mode.
+        
+        - recency: newest first (by file date or indexed_at)
+        - when: sort by date (newest first, since user wants to know when)
+        """
+        def get_date_key(r):
+            # Try file date first
+            file_date = self._extract_file_date(r.get('file_path', ''))
+            if file_date:
+                return file_date
+            # Fall back to indexed_at
+            return r.get('indexed_at', '1970-01-01')
+        
+        if mode == 'recency':
+            # Sort by date descending (newest first), but keep some semantic relevance
+            # Top semantic results that are also recent should win
+            for r in results:
+                date_str = get_date_key(r)
+                # Boost recent chunks significantly
+                try:
+                    file_dt = datetime.strptime(date_str[:10], '%Y-%m-%d')
+                    now = datetime.now()
+                    days_ago = max(0, (now - file_dt).days)
+                    # Aggressive recency boost: recent chunks get up to +0.5
+                    recency_boost = max(0, 0.5 * (1 - days_ago / 365))
+                    r['combined_score'] = r.get('combined_score', 0) + recency_boost
+                    r['temporal_boost'] = recency_boost
+                except (ValueError, TypeError):
+                    r['temporal_boost'] = 0
+            
+            results.sort(key=lambda x: x.get('combined_score', 0), reverse=True)
+        
+        elif mode == 'when':
+            # For "when" queries, date is the answer — boost chunks with clear dates
+            for r in results:
+                text = r.get('text', '')
+                # Boost chunks that contain date information
+                date_mentions = len(re.findall(r'\d{4}-\d{2}-\d{2}|(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}', text, re.I))
+                date_boost = min(0.3, date_mentions * 0.1)
+                r['combined_score'] = r.get('combined_score', 0) + date_boost
+                r['temporal_boost'] = date_boost
+            
+            results.sort(key=lambda x: x.get('combined_score', 0), reverse=True)
+        
+        return results
     
     def _detect_intents(self, query: str) -> List[str]:
         """Detect query intents."""
@@ -332,11 +480,21 @@ class HybridSearch:
         if not cleaned:
             return []
         
-        # 0. Detect query intent + date patterns
+        # 0. Detect query intent + date patterns + temporal mode
         intents = self._detect_intents(query)
         date_patterns = self._extract_date_patterns(query)
+        temporal_mode = self._detect_temporal_mode(query)
         
-        # 1. Entity lookup — try full query first, then individual proper nouns
+        # v2.3: For specific_date queries with extracted dates, get date-filtered chunks
+        date_filtered_chunks = []
+        if temporal_mode == 'specific_date' and date_patterns:
+            for dp in date_patterns:
+                date_filtered_chunks.extend(self._get_chunks_by_date(dp))
+        
+        # v2.3: Widen the search for temporal queries (need more candidates to rerank)
+        temporal_multiplier = 3 if temporal_mode else 1
+        
+        # 1. Entity lookup — try full query first, then proper noun pairs, then singles
         entity_results = self.db.search_entities(cleaned, limit=5)
         if not entity_results:
             common_words = {'what', 'who', 'where', 'when', 'how', 'why', 'which', 'is', 'are', 
@@ -345,26 +503,57 @@ class HybridSearch:
                         'been', 'being', 'with', 'about', 'tell', 'me', 'give', 'show', 'find',
                         'search', 'look', 'up', 'can', 'you', 'i', 'my', 'his', 'her', 'their',
                         'what', 'current', 'status', 'update', 'info', 'data', 'details',
-                        'latest', 'report', 'summary', 'metrics', 'please', 'question'}
+                        'latest', 'report', 'summary', 'metrics', 'please', 'question',
+                        'does', 'have', 'any', 'food', 'last', 'team', 'work', 'person'}
             original_words = query.split()
+            # v2.3: Extract proper nouns (capitalized, non-common)
+            proper_nouns = []
             for word in original_words:
-                clean_word = re.sub(r'[^\w]', '', word)
-                if (clean_word and len(clean_word) > 2 and 
+                clean_word = re.sub(r"[^\w']", '', word)
+                if (clean_word and len(clean_word) > 1 and 
                     clean_word[0].isupper() and clean_word.lower() not in common_words):
-                    word_results = self.db.search_entities(clean_word, limit=3)
+                    proper_nouns.append(clean_word)
+            
+            # v2.3: Try full name pairs first (e.g., "Kai Osei")
+            if len(proper_nouns) >= 2:
+                for i in range(len(proper_nouns) - 1):
+                    full_name = f"{proper_nouns[i]} {proper_nouns[i+1]}"
+                    name_results = self.db.search_entities(full_name, limit=5)
+                    if name_results:
+                        # Filter: only keep results where BOTH name parts appear
+                        filtered = [e for e in name_results 
+                                   if proper_nouns[i].lower() in (e['entity_value'] + ' ' + e['entity_name']).lower()
+                                   and proper_nouns[i+1].lower() in (e['entity_value'] + ' ' + e['entity_name']).lower()]
+                        if filtered:
+                            entity_results.extend(filtered)
+                        else:
+                            entity_results.extend(name_results[:3])
+            
+            # v2.3: Fall back to single proper nouns only if no pair matches found
+            if not entity_results:
+                for pn in proper_nouns:
+                    word_results = self.db.search_entities(pn, limit=3)
                     if word_results:
                         entity_results.extend(word_results)
         entity_chunk_ids = {e['chunk_id'] for e in entity_results}
         
-        # 2. Keyword search
-        keyword_results = self.db.search_keyword(query, limit=max_results * 5)
+        # 2. Keyword search (wider for temporal queries)
+        keyword_results = self.db.search_keyword(query, limit=max_results * 5 * temporal_multiplier)
         
-        # 3. Semantic search with expanded query
+        # 3. Semantic search with expanded query (wider for temporal queries)
         expanded_query = self._expand_query(query)
         query_embedding = self.embedder.embed(expanded_query)
         semantic_results = self.db.search_semantic(
-            query_embedding.tolist(), limit=max_results * 5
+            query_embedding.tolist(), limit=max_results * 5 * temporal_multiplier
         )
+        
+        # v2.3: Inject date-filtered chunks for specific_date queries
+        if date_filtered_chunks:
+            existing_ids = {r['id'] for r in semantic_results}
+            for chunk in date_filtered_chunks:
+                if chunk['id'] not in existing_ids:
+                    existing_ids.add(chunk['id'])
+                    semantic_results.append(chunk)
         
         # 4. Inject entity parent chunks
         if entity_chunk_ids:
@@ -454,8 +643,10 @@ class HybridSearch:
             # Intent boost
             intent_boost = self._intent_boost(text, intents)
             
-            # Date routing
+            # Date routing (v2.3: much stronger for temporal queries)
             date_boost = self._date_file_boost(result.get('file_path', ''), date_patterns)
+            if temporal_mode == 'specific_date' and date_boost > 0:
+                date_boost = 0.8  # Very strong boost — date match is highly relevant
             
             combined = (semantic_score + keyword_boost + type_boost + source_boost + 
                        entity_boost + intent_boost + date_boost) * temporal_factor
@@ -550,6 +741,10 @@ class HybridSearch:
                         '_adjacent_to': chunk_id,
                     })
         
+        # v2.3: Apply temporal reranking before final sort
+        if temporal_mode in ('recency', 'when'):
+            results = self._temporal_rerank(results, temporal_mode)
+        
         # Sort by combined score
         results.sort(key=lambda x: x['combined_score'], reverse=True)
         
@@ -583,4 +778,18 @@ class HybridSearch:
                 deduped[0]['entities'] = entity_info
         
         filtered = [r for r in deduped if r['combined_score'] >= min_score]
+        
+        # v2.4: Cross-encoder reranking
+        # Take top-20 candidates and rerank with cross-encoder for better precision
+        if self.reranker and filtered:
+            rerank_pool = filtered[:20]  # Wide pool for reranker
+            reranked = self.reranker.rerank(
+                query=query,
+                candidates=rerank_pool,
+                text_key='text',
+                top_k=max_results,
+                blend_weight=0.4,  # 40% original, 60% cross-encoder
+            )
+            return reranked
+        
         return filtered[:max_results]

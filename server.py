@@ -27,7 +27,7 @@ from indexer import MemoryIndexer
 import uvicorn
 import threading
 
-__version__ = "2.2.0"
+__version__ = "2.4.0"
 
 app = FastAPI(title="HMS - Hybrid Memory Server", version=__version__)
 
