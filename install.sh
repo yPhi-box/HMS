@@ -210,18 +210,16 @@ fi
 if [[ -d "$WATCH_DIR" ]]; then
     log "Running initial index of $WATCH_DIR..."
     source "$INSTALL_DIR/venv/bin/activate"
+    cd "$INSTALL_DIR"
     python3 -c "
 from pathlib import Path
 from indexer import MemoryIndexer
-import os
-os.chdir('$INSTALL_DIR')
 indexer = MemoryIndexer(Path('memory.db'))
 indexer.index_directory(Path('$WATCH_DIR'), pattern='**/*.md', force=True)
 stats = indexer.get_stats()
 print(f\"Indexed: {stats['total_chunks']} chunks from {stats['total_files']} files, {stats['total_entities']} entities\")
 indexer.close()
 " 2>&1 | tail -5
-    deactivate
     deactivate
     
     # Restart service to pick up the new index
