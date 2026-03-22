@@ -194,7 +194,7 @@ Actual savings depend on your usage. The principle: sending 500 tokens of the *r
 - **Disk:** ~1.5GB free (models + venv + database)
 - **RAM:** ~400MB at runtime
 - **GPU:** Optional — CPU works great, GPU speeds up initial indexing
-- **OpenClaw:** 2026.2.1 or later (HMS is a plugin — tested on 2026.2.1 through 2026.3.11)
+- **OpenClaw:** 2026.2.1 or later (HMS is a plugin — tested on 2026.2.1, 2026.2.17, 2026.3.1, 2026.3.11, and 2026.3.13)
 
 ### Quick Install
 
