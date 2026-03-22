@@ -1,5 +1,5 @@
 """
-HMS v2.2 — Hybrid Memory Server
+HMS v2.4 — Hybrid Memory Server
 FastAPI server for OpenClaw integration.
 """
 import warnings
