@@ -66,13 +66,31 @@ async def startup():
     except Exception:
         pass
     
-    print(f"HMS v{__version__} ready — {db.get_stats()['total_chunks']} chunks indexed")
+    stats = db.get_stats()
+    print(f"HMS v{__version__} ready — {stats['total_chunks']} chunks indexed")
     
     # Auto-start watcher if WATCH_PATHS is set
     watch_paths = os.environ.get("HMS_WATCH_PATHS", "")
     if watch_paths:
         paths = [p.strip() for p in watch_paths.split(",") if p.strip()]
         if paths:
+            # If the database is empty, run a full index before starting the watcher
+            if stats['total_chunks'] == 0:
+                print("Database is empty — running full initial index...")
+                for watch_path in paths:
+                    watch_dir = Path(watch_path)
+                    if watch_dir.exists():
+                        try:
+                            indexer.index_directory(watch_dir, pattern="**/*.md", force=False)
+                            new_stats = indexer.get_stats()
+                            print(f"Initial index complete: {new_stats['total_chunks']} chunks from {new_stats['total_files']} files")
+                        except Exception as e:
+                            print(f"Warning: initial index failed for {watch_path}: {e}")
+                    else:
+                        print(f"Warning: watch path does not exist: {watch_path}")
+                # Reload search engine to pick up freshly indexed data
+                _reload_search_engine()
+
             from watcher import start_watcher_background
             watcher_thread = start_watcher_background(paths, db_path=str(db_path))
             print(f"Watcher started for: {paths}")

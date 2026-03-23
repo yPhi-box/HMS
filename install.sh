@@ -106,12 +106,12 @@ mkdir -p "$INSTALL_DIR"
 
 # Copy source files
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -d "$SCRIPT_DIR/src" ]]; then
-    cp "$SCRIPT_DIR/src"/*.py "$INSTALL_DIR/"
-    cp "$SCRIPT_DIR/src/requirements.txt" "$INSTALL_DIR/"
+if ls "$SCRIPT_DIR"/*.py &>/dev/null 2>&1; then
+    cp "$SCRIPT_DIR"/*.py "$INSTALL_DIR/"
+    cp "$SCRIPT_DIR/requirements.txt" "$INSTALL_DIR/"
     log "  Source files copied ✓"
 else
-    err "Source directory not found at $SCRIPT_DIR/src"
+    err "Source files not found at $SCRIPT_DIR"
 fi
 
 # Create virtual environment
@@ -186,10 +186,10 @@ fi
 if [[ "$INSTALL_PLUGIN" == "true" ]]; then
     PLUGIN_DIR="$INSTALL_DIR/openclaw-plugin"
     
-    if [[ -d "$SCRIPT_DIR/plugin" ]]; then
+    if [[ -d "$SCRIPT_DIR/openclaw-plugin" ]]; then
         log "Installing OpenClaw plugin..."
         mkdir -p "$PLUGIN_DIR"
-        cp "$SCRIPT_DIR/plugin"/* "$PLUGIN_DIR/"
+        cp "$SCRIPT_DIR/openclaw-plugin"/* "$PLUGIN_DIR/"
         
         # Update server URL in plugin config if non-default port
         if [[ "$PORT" != "8765" ]]; then
