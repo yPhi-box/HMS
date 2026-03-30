@@ -1,7 +1,7 @@
 {
   "id": "hms-memory",
   "name": "HMS - Hybrid Memory Server",
-  "version": "2.4.0",
+  "version": "2.2.0",
   "description": "Local hybrid memory system with zero API costs. Combines semantic search (sentence-transformers), FTS5 keyword matching, entity extraction, and temporal decay.",
   "kind": "memory",
   "configSchema": {
